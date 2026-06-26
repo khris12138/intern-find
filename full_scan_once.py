@@ -767,7 +767,7 @@ def main():
     parser.add_argument("--outdir", type=Path, default=Path("outputs"), help="输出目录")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
     parser.add_argument("--stop-after-empty-pages", type=int, default=2, help="连续空列表页达到该数量后提前停止")
-    parser.add_argument("--cache-retention-days", type=int, default=7, help="缓存保留天数，超过的自动清理（默认 7 天）")
+    parser.add_argument("--cache-retention-days", type=int, default=2, help="缓存保留天数，超过的自动清理（默认 2 天）")
     args = parser.parse_args()
 
     started = datetime.now().strftime("%Y%m%d_%H%M%S")
