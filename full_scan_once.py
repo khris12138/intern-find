@@ -482,6 +482,33 @@ def init_cache(path):
     return conn
 
 
+def cleanup_cache(conn, retention_days=7):
+    """删除超过 retention_days 天的缓存记录，并回收磁盘空间。
+
+    实习僧“1天内发布”的岗位几天后就过期了，留着旧 HTML 只会浪费磁盘。
+    默认保留 7 天，既保留一定的回溯能力，又避免数据库无限膨胀。
+    """
+    import datetime as dt
+
+    cutoff = (dt.datetime.now() - dt.timedelta(days=retention_days)).isoformat(
+        timespec="seconds"
+    )
+    deleted_pages = conn.execute(
+        "delete from list_pages where fetched_at < ?", (cutoff,)
+    ).rowcount
+    deleted_details = conn.execute(
+        "delete from details where fetched_at < ?", (cutoff,)
+    ).rowcount
+    if deleted_pages or deleted_details:
+        conn.commit()
+        conn.execute("vacuum")
+        print(
+            f"缓存清理：删除 {deleted_pages} 个列表页、{deleted_details} 个详情页"
+            f"（{retention_days} 天前），已回收磁盘空间",
+            flush=True,
+        )
+
+
 def cached_page(conn, page, use_cache=True):
     """读取或下载列表页。返回 (html, 是否来自缓存)。"""
     url = list_url(page)
@@ -657,6 +684,7 @@ def evidence(text, hits, width=65):
 def scan(args):
     """执行完整扫描：列表页 -> 详情页 -> 分类。"""
     conn = init_cache(args.cache)
+    cleanup_cache(conn, retention_days=args.cache_retention_days)
     uuids = []
     empty_pages = 0
     for page in range(1, args.pages + 1):
@@ -739,6 +767,7 @@ def main():
     parser.add_argument("--outdir", type=Path, default=Path("outputs"), help="输出目录")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
     parser.add_argument("--stop-after-empty-pages", type=int, default=2, help="连续空列表页达到该数量后提前停止")
+    parser.add_argument("--cache-retention-days", type=int, default=7, help="缓存保留天数，超过的自动清理（默认 7 天）")
     args = parser.parse_args()
 
     started = datetime.now().strftime("%Y%m%d_%H%M%S")
