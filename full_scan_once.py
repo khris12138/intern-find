@@ -261,6 +261,8 @@ FIELDS = [
     "fit_reason",
     "evidence",
     "description",
+    "parse_status",
+    "parse_warning",
     "scale",
     "uuid",
 ]
@@ -385,6 +387,40 @@ def clean_html(raw):
     return text.strip()
 
 
+def extract_description_from_html(text):
+    """从服务端渲染 HTML 中兜底提取职位描述正文。"""
+    patterns = [
+        r'<div class="job_til"[^>]*>\s*职位描述：?\s*</div>\s*'
+        r'(?:<!---->\s*)?<div class="job_part"[^>]*>(.*?)</div>\s*</div>',
+        r'<div class="job_detail"[^>]*>(.*?)</div>',
+    ]
+    for pattern in patterns:
+        description = html_text_between(text, pattern)
+        if description:
+            return description
+    return ""
+
+
+def extract_description(text):
+    """优先读取 Nuxt 数据，失败时从页面 HTML 兜底解析职位描述。"""
+    info_html = js_string_field(text, "info")
+    description = clean_html(info_html)
+    if description:
+        return description, "nuxt", ""
+
+    description = extract_description_from_html(text)
+    if description:
+        return description, "html_fallback", ""
+
+    has_description_marker = any(
+        marker in text
+        for marker in ("职位描述", "岗位职责", "职责描述", "职位要求", "任职要求")
+    )
+    if has_description_marker:
+        return "", "missing", "页面含职位描述标记，但程序未能解析出正文，请复核解析规则"
+    return "", "missing", "详情页未解析出正文，且页面未发现常见职位描述标记"
+
+
 def fallback_title_company(text):
     """当 Nuxt 字段缺失时，从 <title> 中兜底解析岗位名和公司名。"""
     title = ""
@@ -401,8 +437,7 @@ def fallback_title_company(text):
 
 def extract_detail(uuid, text):
     """把一个岗位详情页 HTML 解析成结构化 dict。"""
-    info_html = js_string_field(text, "info")
-    description = clean_html(info_html)
+    description, parse_status, parse_warning = extract_description(text)
     title = js_string_field(text, "iname")
     company = js_string_field(text, "cname")
     fallback_title, fallback_company = fallback_title_company(text)
@@ -440,6 +475,8 @@ def extract_detail(uuid, text):
         "end_time": js_string_field(text, "endtime"),
         "url": url,
         "description": description,
+        "parse_status": parse_status,
+        "parse_warning": parse_warning,
         "scale": scale,
     }
 
@@ -598,15 +635,6 @@ def classify(row):
     if any(kw in _hr_text for kw in _hr_keywords):
         return None
 
-    # 排除小公司（规模不超过两位数，即 < 100 人）。
-    # 公司规模字段如 "15-50人"、"2000人以上"、""（未知）。
-    # 未知规模的不排除，只排除明确的小规模。
-    _scale = row.get("scale", "")
-    if _scale:
-        _scale_nums = re.findall(r"\d+", _scale)
-        if _scale_nums and max(int(n) for n in _scale_nums) < 100:
-            return None
-
     # 近似匹配。
     matched = []
     categories = []
@@ -709,6 +737,7 @@ def scan(args):
     all_rows = []
     matched_rows = []
     failed_uuids = []
+    parse_warning_rows = []
     for index, uuid in enumerate(ordered_uuids, start=1):
         # 单个详情页抓取失败（超时、限流、SSL 被掐断等）不应该让整轮崩溃。
         # 这里把失败的那一条记下并跳过，保住前后所有已抓岗位的结果。
@@ -724,6 +753,8 @@ def scan(args):
             continue
         row = extract_detail(uuid, detail_html)
         all_rows.append(row)
+        if row.get("parse_warning"):
+            parse_warning_rows.append(row)
         matched = classify(row)
         if matched:
             matched_rows.append(matched)
@@ -740,6 +771,14 @@ def scan(args):
         print(
             f"本轮有 {len(failed_uuids)} 个详情页抓取失败已跳过："
             f"{', '.join(failed_uuids)}",
+            flush=True,
+        )
+    if parse_warning_rows:
+        warning_uuids = ", ".join(row["uuid"] for row in parse_warning_rows[:20])
+        more = "..." if len(parse_warning_rows) > 20 else ""
+        print(
+            f"本轮有 {len(parse_warning_rows)} 个详情页未能解析正文，"
+            f"请复核：{warning_uuids}{more}",
             flush=True,
         )
     conn.close()

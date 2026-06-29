@@ -43,6 +43,8 @@ FIELD_LABELS = [
     ("fit_reason", "推荐理由"),
     ("evidence", "命中证据"),
     ("description", "职位描述"),
+    ("parse_status", "正文解析"),
+    ("parse_warning", "解析警告"),
     ("uuid", "岗位ID"),
 ]
 
@@ -115,8 +117,8 @@ def sheet_xml(rows, widths, freeze=True):
         height = 34 if row_index == 1 else 54
         parts.append(f'<row r="{row_index}" ht="{height}" customHeight="1">')
         for col_index, value in enumerate(row, start=1):
-            # 表头使用蓝底白字；推荐理由、证据、描述列开启换行并顶部对齐。
-            style = 1 if row_index == 1 else 2 if col_index in (16, 17, 18) else None
+            # 表头使用蓝底白字；推荐理由、证据、描述、警告列开启换行并顶部对齐。
+            style = 1 if row_index == 1 else 2 if col_index in (16, 17, 18, 20) else None
             parts.append(write_cell(value, row_index, col_index, style=style))
         parts.append("</row>")
     parts.append("</sheetData>")
@@ -356,7 +358,9 @@ def default_widths():
         16: 60,
         17: 70,
         18: 80,
-        19: 18,
+        19: 14,
+        20: 42,
+        21: 18,
     }
 
 

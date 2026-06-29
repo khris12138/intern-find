@@ -74,13 +74,20 @@ def cleanup_old_outputs(outdir: Path, today: str):
 
 
 def open_urls_in_browser(run_dir: Path):
-    """在默认浏览器中打开所有直接匹配职位链接。"""
+    """在默认浏览器中打开直接匹配和高等级近似匹配职位链接。"""
     data = json.loads((run_dir / "matches.json").read_text())
-    urls = [job["url"] for job in data.get("explicit", []) if job.get("url")]
+    selected_jobs = list(data.get("explicit", []))
+    selected_jobs.extend(
+        job
+        for job in data.get("approximate", [])
+        if job.get("match_level") == "高"
+    )
+
+    urls = list(dict.fromkeys(job["url"] for job in selected_jobs if job.get("url")))
     if not urls:
-        print("没有直接匹配的职位链接。", flush=True)
+        print("没有直接匹配或近似匹配-高的职位链接。", flush=True)
         return
-    print(f"在浏览器中打开 {len(urls)} 个直接匹配链接...", flush=True)
+    print(f"在浏览器中打开 {len(urls)} 个直接匹配和近似匹配-高链接...", flush=True)
     subprocess.run(["open"] + urls)
 
 
@@ -101,7 +108,7 @@ def main():
     parser.add_argument("--outdir", type=Path, default=ROOT / "outputs", help="输出根目录")
     parser.add_argument("--cache", type=Path, default=ROOT / "shixiseng_day_cache.sqlite3", help="一天内岗位缓存")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
-    parser.add_argument("--open-urls", action="store_true", help="完成后在默认浏览器打开直接匹配链接")
+    parser.add_argument("--open-urls", action="store_true", help="完成后在默认浏览器打开直接匹配和近似匹配-高链接")
     args = parser.parse_args()
 
     scan_command = [
