@@ -30,27 +30,12 @@ from xml.sax.saxutils import escape
 
 
 FIELD_LABELS = [
-    ("is_new", "是否新增"),
-    ("match_level", "匹配等级"),
     ("title", "岗位名称"),
     ("company", "公司"),
-    ("industry", "行业"),
     ("address", "工作地点"),
     ("salary", "薪资"),
-    ("min_salary", "薪资下限"),
-    ("max_salary", "薪资上限"),
-    ("scale", "公司规模"),
-    ("degree", "学历要求"),
-    ("refresh_time", "刷新时间"),
     ("url", "详情链接"),
     ("matched_keywords", "命中关键词"),
-    ("fit_reason", "推荐理由"),
-    ("evidence", "命中证据"),
-    ("description", "职位描述"),
-    ("parse_status", "正文解析"),
-    ("parse_warning", "解析警告"),
-    ("filter_reasons", "筛选剔除原因"),
-    ("uuid", "岗位ID"),
 ]
 
 
@@ -122,8 +107,7 @@ def sheet_xml(rows, widths, freeze=True):
         height = 34 if row_index == 1 else 54
         parts.append(f'<row r="{row_index}" ht="{height}" customHeight="1">')
         for col_index, value in enumerate(row, start=1):
-            # 表头使用蓝底白字；推荐理由、证据、描述、警告列开启换行并顶部对齐。
-            style = 1 if row_index == 1 else 2 if col_index in (16, 17, 18, 20) else None
+            style = 1 if row_index == 1 else 2 if col_index in (4, 6) else None
             parts.append(write_cell(value, row_index, col_index, style=style))
         parts.append("</row>")
     parts.append("</sheetData>")
@@ -311,8 +295,11 @@ def summary_rows(explicit, approximate, metadata=None):
         ["项目", "数值", "说明"],
         ["本轮新增岗位详情数", scanned_jobs, source_desc],
         ["当前列表岗位总数", metadata.get("current_jobs", ""), "本次列表页中看到的全部上海校招/全职岗位"],
-        ["上次以来新增岗位", metadata.get("new_jobs", ""), "通过岗位 ID 与上次扫描快照比对得到"],
+        ["累计基线岗位数", metadata.get("snapshot_jobs", ""), "历次扫描已经登记过的岗位名 + 公司名签名"],
+        ["上次以来新增岗位", metadata.get("new_jobs", ""), "通过岗位名 + 公司名签名与上次扫描快照比对得到"],
         ["硬筛剔除", metadata.get("filtered_out", ""), f"已知薪资下限低于 {metadata.get('min_salary', 10000)} 或公司规模下限低于 {metadata.get('min_company_size', 1000)}"],
+        ["地点剔除", metadata.get("location_filtered", ""), "详情页工作地点不含上海"],
+        ["打开详情页", metadata.get("detail_attempted", ""), "新增且通过薪资/规模硬筛后进入详情页确认地点和匹配的数量"],
         ["直接匹配", len(explicit), "岗位描述直接出现社会学、社会科学、人文社科、社科、用户研究、用户洞察或用研"],
         ["近似匹配", len(approximate), "未直接出现上述词，但包含研究、调研、行业分析、社会议题等能力信号"],
         ["近似匹配-高", levels.get("高", 0), "建议优先查看"],
@@ -324,8 +311,11 @@ def summary_rows(explicit, approximate, metadata=None):
 
 def build_xlsx(explicit, approximate, output, metadata=None):
     """把三个 sheet 写入 xlsx zip 包。"""
+    current_list_path = metadata.get("_source_dir", Path()) / "current_list_jobs.csv"
+    current_list = read_csv(current_list_path) if current_list_path.exists() else []
     sheets = [
         ("摘要", summary_rows(explicit, approximate, metadata), {1: 18, 2: 16, 3: 90}),
+        ("当前列表", rows_for_matches(current_list), default_widths()),
         ("直接匹配", rows_for_matches(explicit), default_widths()),
         ("近似匹配", rows_for_matches(approximate), default_widths()),
     ]
@@ -345,28 +335,12 @@ def build_xlsx(explicit, approximate, output, metadata=None):
 def default_widths():
     """匹配结果 sheet 的列宽。数字是 Excel 的字符宽度单位。"""
     return {
-        1: 12,
-        2: 8,
-        3: 26,
-        4: 20,
-        5: 18,
-        6: 10,
-        7: 32,
-        8: 12,
-        9: 12,
-        10: 14,
-        11: 10,
-        12: 20,
-        13: 14,
-        14: 52,
-        15: 28,
-        16: 60,
-        17: 70,
-        18: 80,
-        19: 14,
-        20: 42,
-        21: 20,
-        22: 18,
+        1: 30,
+        2: 20,
+        3: 24,
+        4: 16,
+        5: 60,
+        6: 28,
     }
 
 
@@ -378,6 +352,7 @@ def main():
     explicit = read_csv(source / "explicit_matches.csv")
     approximate = read_csv(source / "approximate_matches.csv")
     metadata = read_metadata(source)
+    metadata["_source_dir"] = source
     output.parent.mkdir(parents=True, exist_ok=True)
     build_xlsx(explicit, approximate, output, metadata)
     print(output)

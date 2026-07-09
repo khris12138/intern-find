@@ -104,11 +104,13 @@ def update_latest_copy(source):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", type=int, default=50, help="列表页扫描上限")
+    parser.add_argument("--pages", type=int, default=500, help="列表页扫描上限；连续空页会提前停止")
     parser.add_argument("--delay", type=float, default=0.3, help="每次新请求后的等待秒数")
     parser.add_argument("--outdir", type=Path, default=ROOT / "outputs", help="输出根目录")
     parser.add_argument("--cache", type=Path, default=ROOT / "shixiseng_school_cache.sqlite3", help="校招增量扫描缓存和快照")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
+    parser.add_argument("--reset-baseline", action="store_true", help="只建立当前职位列表基线，不把当前既有岗位当作新增展示")
+    parser.add_argument("--detail-all-new", action="store_true", help="兼容旧参数；当前默认已对所有新增且通过硬筛的岗位打开详情页")
     parser.add_argument("--open-urls", action="store_true", help="完成后在默认浏览器打开直接匹配和近似匹配-高链接")
     args = parser.parse_args()
 
@@ -126,6 +128,10 @@ def main():
     ]
     if args.refresh:
         scan_command.append("--refresh")
+    if args.reset_baseline:
+        scan_command.append("--reset-baseline")
+    if args.detail_all_new:
+        scan_command.append("--detail-all-new")
 
     started = datetime.now().strftime("%Y%m%d_%H%M%S")
     run(scan_command)

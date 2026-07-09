@@ -249,6 +249,7 @@ FIELDS = [
     "match_level",
     "score",
     "is_new",
+    "signature",
     "title",
     "company",
     "industry",
@@ -270,6 +271,7 @@ FIELDS = [
     "parse_status",
     "parse_warning",
     "scale",
+    "list_tags",
     "filter_reasons",
     "uuid",
 ]
@@ -349,6 +351,237 @@ def unique_uuids(text):
             seen.add(uuid)
             uuids.append(uuid)
     return uuids
+
+
+def split_top_level(text):
+    """按顶层逗号切分 JavaScript 参数或数组元素。"""
+    parts = []
+    start = 0
+    depth = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def js_literal_value(token):
+    """把简单 JavaScript 字面量转成 Python 值。"""
+    token = token.strip()
+    if not token or token == "void 0":
+        return ""
+    if token in {"true", "false"}:
+        return token == "true"
+    if token == "null":
+        return ""
+    if token.startswith('"') and token.endswith('"'):
+        try:
+            return json.loads(token)
+        except json.JSONDecodeError:
+            return html.unescape(token[1:-1])
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", token):
+        return int(token) if "." not in token else float(token)
+    return None
+
+
+def nuxt_arg_map(text):
+    """解析 window.__NUXT__ IIFE 的形参和实参映射。
+
+    列表页为了压缩体积，会把公司名、行业、规模等值写成变量；例如
+    `cname:c`，真正的 `c` 在 IIFE 末尾参数里才是 `"阿里巴巴"`。
+    """
+    match = re.search(
+        r"window\.__NUXT__=\(function\((.*?)\)\{return .*?\}\((.*)\)\);</script>",
+        text,
+        flags=re.S,
+    )
+    if not match:
+        return {}
+    names = [name.strip() for name in match.group(1).split(",")]
+    values = split_top_level(match.group(2))
+    mapping = {}
+    for name, token in zip(names, values):
+        value = js_literal_value(token)
+        mapping[name] = "" if value is None else value
+    return mapping
+
+
+def resolve_js_value(token, mapping):
+    """解析列表页对象里的字段值，支持变量、字符串、数字和简单数组。"""
+    token = token.strip()
+    literal = js_literal_value(token)
+    if literal is not None:
+        return literal
+    if token in mapping:
+        return mapping[token]
+    if token.startswith("[") and token.endswith("]"):
+        values = []
+        for item in split_top_level(token[1:-1]):
+            value = resolve_js_value(item, mapping)
+            if value not in ("", None, False):
+                values.append(str(value))
+        return values
+    return ""
+
+
+def object_fragment_around_uuid(text, uuid):
+    """找到列表页里包含某个 uuid 的岗位对象片段。"""
+    marker = f'uuid:"{uuid}"'
+    index = text.find(marker)
+    if index < 0:
+        return ""
+    start = text.rfind("{ad_type", 0, index)
+    if start < 0:
+        start = text.rfind("{", 0, index)
+    if start < 0:
+        return ""
+
+    depth = 0
+    quote = ""
+    escaped = False
+    for pos in range(start, len(text)):
+        char = text[pos]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : pos + 1]
+    return ""
+
+
+def top_level_object_fields(fragment):
+    """解析对象片段的顶层字段，忽略嵌套对象内部字段。"""
+    if not fragment.startswith("{") or not fragment.endswith("}"):
+        return {}
+    fields = {}
+    body = fragment[1:-1]
+    parts = split_top_level(body)
+    for part in parts:
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)\s*$", part, flags=re.S)
+        if match:
+            fields[match.group(1)] = match.group(2).strip()
+    return fields
+
+
+def salary_desc_from_bounds(min_salary, max_salary):
+    """根据列表页薪资上下限生成展示文本。"""
+    try:
+        low = int(min_salary or 0)
+        high = int(max_salary or 0)
+    except (TypeError, ValueError):
+        low = high = 0
+    if low <= 0 and high <= 0:
+        return "薪资面议"
+    if low > 0 and high > 0:
+        return f"{low}-{high}/月"
+    return f"{low or high}/月"
+
+
+def normalize_signature_part(value):
+    """规范化岗位名/公司名，用于快速查重。"""
+    value = (value or "").lower()
+    value = re.sub(r"\s+", "", value)
+    value = re.sub(r"[（）()【】\[\]《》<>·•\-_/|,，.。:：;；]+", "", value)
+    return value
+
+
+def job_signature(row):
+    """用岗位名 + 公司名生成跨扫描稳定签名。"""
+    title = normalize_signature_part(row.get("title", ""))
+    company = normalize_signature_part(row.get("company", ""))
+    if not title or not company:
+        return row.get("uuid", "")
+    return f"{title}::{company}"
+
+
+def list_row_from_fragment(uuid, fragment, mapping):
+    """把列表页岗位对象片段转换为与详情页兼容的 row。"""
+    fields = top_level_object_fields(fragment)
+
+    def value(name):
+        if name not in fields:
+            return ""
+        return resolve_js_value(fields[name], mapping)
+
+    min_salary = value("minsalary") or value("minsal")
+    max_salary = value("maxsalary") or value("maxsal")
+    tag_values = []
+    for field in ("skill", "c_tags", "i_tags", "hope_you"):
+        field_value = value(field)
+        if isinstance(field_value, list):
+            tag_values.extend(field_value)
+        elif field_value:
+            tag_values.append(str(field_value))
+    list_tags = ", ".join(dict.fromkeys(tag_values))
+
+    row = {
+        "uuid": uuid,
+        "title": value("name"),
+        "company": value("cname"),
+        "industry": value("industry"),
+        "city": value("city"),
+        "address": value("city"),
+        "degree": value("degree"),
+        "salary": salary_desc_from_bounds(min_salary, max_salary),
+        "min_salary": str(min_salary or ""),
+        "max_salary": str(max_salary or ""),
+        "days_per_week": str(value("day") or ""),
+        "months": str(value("month_num") or ""),
+        "refresh_time": value("refresh"),
+        "end_time": "",
+        "url": BASE_DETAIL_URL.format(uuid=uuid),
+        "description": list_tags,
+        "parse_status": "list",
+        "parse_warning": "",
+        "scale": value("scale"),
+        "list_tags": list_tags,
+    }
+    row["signature"] = job_signature(row)
+    return row
+
+
+def list_rows_from_page(text):
+    """从列表页 HTML 直接解析岗位卡片信息。"""
+    mapping = nuxt_arg_map(text)
+    rows = []
+    for uuid in unique_uuids(text):
+        fragment = object_fragment_around_uuid(text, uuid)
+        if not fragment:
+            continue
+        row = list_row_from_fragment(uuid, fragment, mapping)
+        if row.get("title"):
+            rows.append(row)
+    return rows
 
 
 def js_string_field(text, field):
@@ -495,6 +728,17 @@ def extract_detail(uuid, text):
     }
 
 
+def merge_detail_over_list(list_row, detail_row):
+    """用详情页字段补强列表页字段，列表页已有的公司/规模/薪资作为兜底保留。"""
+    merged = dict(list_row)
+    for key, value in detail_row.items():
+        if value not in ("", None):
+            merged[key] = value
+    merged["signature"] = list_row.get("signature") or job_signature(merged)
+    merged["list_tags"] = list_row.get("list_tags", "")
+    return merged
+
+
 def init_cache(path):
     """初始化 SQLite 缓存。
 
@@ -543,10 +787,10 @@ def init_cache(path):
 
 
 def cleanup_cache(conn, retention_days=7):
-    """删除超过 retention_days 天的缓存记录，并回收磁盘空间。
+    """删除超过 retention_days 天的网页缓存记录，并回收磁盘空间。
 
-    实习僧“1天内发布”的岗位几天后就过期了，留着旧 HTML 只会浪费磁盘。
-    默认保留 7 天，既保留一定的回溯能力，又避免数据库无限膨胀。
+    这里只清理 list_pages 和 details，不清理 scan_state；
+    因此旧网页 HTML 不会无限增长，每日增量基线也不会受影响。
     """
     import datetime as dt
 
@@ -570,7 +814,7 @@ def cleanup_cache(conn, retention_days=7):
 
 
 def load_previous_snapshot(conn, state_key=SCAN_STATE_KEY):
-    """读取上次扫描保存的岗位 ID 快照。"""
+    """读取上次扫描保存的岗位签名快照。"""
     row = conn.execute(
         "select updated_at, uuids_json from scan_state where state_key = ?",
         (state_key,),
@@ -585,15 +829,15 @@ def load_previous_snapshot(conn, state_key=SCAN_STATE_KEY):
     return updated_at, [uuid for uuid in uuids if isinstance(uuid, str)]
 
 
-def save_current_snapshot(conn, uuids, state_key=SCAN_STATE_KEY):
-    """保存本轮列表页看到的岗位 ID，供下次启动时做增量比对。"""
+def save_current_snapshot(conn, signatures, state_key=SCAN_STATE_KEY):
+    """保存本轮列表页看到的岗位签名，供下次启动时做增量比对。"""
     now = datetime.now().isoformat(timespec="seconds")
     conn.execute(
         """
         replace into scan_state(state_key, updated_at, uuids_json)
         values (?, ?, ?)
         """,
-        (state_key, now, json.dumps(list(dict.fromkeys(uuids)), ensure_ascii=False)),
+        (state_key, now, json.dumps(list(dict.fromkeys(signatures)), ensure_ascii=False)),
     )
     conn.commit()
     return now
@@ -646,6 +890,7 @@ def haystack(row):
             row.get("title", ""),
             row.get("company", ""),
             row.get("industry", ""),
+            row.get("list_tags", ""),
             row.get("description", ""),
         ]
     )
@@ -827,14 +1072,21 @@ def hard_filter_reasons(row, min_salary, min_company_size):
     return reasons
 
 
+def is_shanghai_detail(row):
+    """只接受详情页工作地点明确包含上海的岗位。"""
+    location_text = "\n".join([row.get("address", ""), row.get("city", "")])
+    return "上海" in location_text
+
+
 def scan(args):
-    """执行完整扫描：列表页 -> 详情页 -> 分类。"""
+    """执行完整扫描：列表页快扫 -> 新职位精读 -> 分类。"""
     conn = init_cache(args.cache)
     cleanup_cache(conn, retention_days=args.cache_retention_days)
-    previous_snapshot_at, previous_uuids = load_previous_snapshot(conn)
-    previous_uuid_set = set(previous_uuids)
+    previous_snapshot_at, previous_signatures = load_previous_snapshot(conn)
+    previous_key_set = set(previous_signatures)
+    previous_uuid_set = {key for key in previous_signatures if key.startswith("inn_")}
 
-    uuids = []
+    list_rows = []
     empty_pages = 0
     for page in range(1, args.pages + 1):
         text, from_cache = cached_page(
@@ -842,28 +1094,74 @@ def scan(args):
             page,
             use_cache=args.use_list_cache and not args.refresh,
         )
-        page_uuids = unique_uuids(text)
+        page_rows = list_rows_from_page(text)
+        if not page_rows:
+            # 兜底：如果列表页结构变化，至少保留 uuid，后续仍可进入详情页。
+            page_rows = [
+                {
+                    "uuid": uuid,
+                    "title": "",
+                    "company": "",
+                    "industry": "",
+                    "city": "",
+                    "address": "",
+                    "degree": "",
+                    "salary": "",
+                    "min_salary": "",
+                    "max_salary": "",
+                    "days_per_week": "",
+                    "months": "",
+                    "refresh_time": "",
+                    "end_time": "",
+                    "url": BASE_DETAIL_URL.format(uuid=uuid),
+                    "description": "",
+                    "parse_status": "list_uuid_only",
+                    "parse_warning": "列表页结构化字段解析失败，仅提取到岗位 ID",
+                    "scale": "",
+                    "list_tags": "",
+                    "signature": uuid,
+                }
+                for uuid in unique_uuids(text)
+            ]
         print(
-            f"page {page}/{args.pages}: {len(page_uuids)} ids"
+            f"page {page}/{args.pages}: {len(page_rows)} jobs"
             f"{' cache' if from_cache else ''}",
             flush=True,
         )
-        if not page_uuids:
+        if not page_rows:
             empty_pages += 1
             if empty_pages >= args.stop_after_empty_pages:
                 break
         else:
             empty_pages = 0
-        uuids.extend(page_uuids)
+        list_rows.extend(page_rows)
         if not from_cache:
             time.sleep(args.delay)
 
-    ordered_uuids = list(dict.fromkeys(uuids))
-    new_uuids = [uuid for uuid in ordered_uuids if uuid not in previous_uuid_set]
+    ordered_list_rows = []
+    seen_signatures = set()
+    for row in list_rows:
+        signature = row.get("signature") or job_signature(row)
+        if signature in seen_signatures:
+            continue
+        row["signature"] = signature
+        seen_signatures.add(signature)
+        ordered_list_rows.append(row)
+
+    current_signatures = [row["signature"] for row in ordered_list_rows]
+    new_list_rows = [
+        row
+        for row in ordered_list_rows
+        if row["signature"] not in previous_key_set and row.get("uuid", "") not in previous_uuid_set
+    ]
+    if args.reset_baseline:
+        new_list_rows = []
+
     print(
         f"snapshot_previous_at={previous_snapshot_at or 'none'} "
-        f"current_jobs={len(ordered_uuids)} new_jobs={len(new_uuids)} "
-        f"seen_before={len(ordered_uuids) - len(new_uuids)}",
+        f"current_jobs={len(ordered_list_rows)} new_jobs={len(new_list_rows)} "
+        f"seen_before={len(ordered_list_rows) - len(new_list_rows)}"
+        f"{' baseline_reset' if args.reset_baseline else ''}",
         flush=True,
     )
 
@@ -872,41 +1170,71 @@ def scan(args):
     failed_uuids = []
     parse_warning_rows = []
     filtered_out_rows = []
-    for index, uuid in enumerate(new_uuids, start=1):
-        # 单个详情页抓取失败（超时、限流、SSL 被掐断等）不应该让整轮崩溃。
-        # 这里把失败的那一条记下并跳过，保住前后所有已抓岗位的结果。
-        try:
-            detail_html, from_cache = cached_detail(conn, uuid, use_cache=not args.refresh)
-        except (URLError, TimeoutError, ConnectionError, OSError) as error:
-            failed_uuids.append(uuid)
-            print(
-                f"detail {index}/{len(new_uuids)}: {uuid} 抓取失败已跳过：{error}",
-                flush=True,
-            )
-            time.sleep(args.delay)
-            continue
-        row = extract_detail(uuid, detail_html)
+    list_skipped_rows = []
+    location_filtered_rows = []
+    detail_attempted = 0
+    for index, list_row in enumerate(new_list_rows, start=1):
+        uuid = list_row.get("uuid", "")
+        row = dict(list_row)
         row["is_new"] = "yes"
-        all_rows.append(row)
-        if row.get("parse_warning"):
-            parse_warning_rows.append(row)
         filter_reasons = hard_filter_reasons(
             row,
             min_salary=args.min_salary,
             min_company_size=args.min_company_size,
         )
         row["filter_reasons"] = "; ".join(filter_reasons)
-        matched = None if filter_reasons else classify(row)
+
+        list_match = None if filter_reasons else classify(row)
+        if filter_reasons:
+            filtered_out_rows.append(row)
+            all_rows.append(row)
+            print(
+                f"list {index}/{len(new_list_rows)}: {uuid} filtered",
+                flush=True,
+            )
+            continue
+
+        detail_attempted += 1
+        # 单个详情页抓取失败（超时、限流、SSL 被掐断等）不应该让整轮崩溃。
+        try:
+            detail_html, from_cache = cached_detail(conn, uuid, use_cache=not args.refresh)
+            detail_row = extract_detail(uuid, detail_html)
+            row = merge_detail_over_list(row, detail_row)
+        except (URLError, TimeoutError, ConnectionError, OSError) as error:
+            failed_uuids.append(uuid)
+            row["parse_status"] = "list_fallback"
+            row["parse_warning"] = f"详情页抓取失败，使用列表页字段：{error}"
+            from_cache = False
+
+        if not is_shanghai_detail(row):
+            row["filter_reasons"] = "详情页工作地点不含上海"
+            location_filtered_rows.append(row)
+            all_rows.append(row)
+            print(
+                f"detail {detail_attempted}: {uuid} "
+                f"{'cache ' if from_cache else ''}location-filtered",
+                flush=True,
+            )
+            if not from_cache:
+                time.sleep(args.delay)
+            continue
+
+        if row.get("parse_warning"):
+            parse_warning_rows.append(row)
+        row["is_new"] = "yes"
+        row["filter_reasons"] = ""
+        all_rows.append(row)
+        matched = classify(row) or list_match
         if matched:
             matched["is_new"] = "yes"
+            matched["signature"] = row.get("signature", "")
+            matched["list_tags"] = row.get("list_tags", "")
             matched["filter_reasons"] = ""
             matched_rows.append(matched)
-        elif filter_reasons:
-            filtered_out_rows.append(row)
         print(
-            f"detail {index}/{len(new_uuids)}: {uuid} "
+            f"detail {detail_attempted}: {uuid} "
             f"{'cache ' if from_cache else ''}"
-            f"{'filtered' if filter_reasons else 'matched' if matched else 'skip'}",
+            f"{'matched' if matched else 'skip'}",
             flush=True,
         )
         if not from_cache:
@@ -926,22 +1254,30 @@ def scan(args):
             f"请复核：{warning_uuids}{more}",
             flush=True,
         )
-    snapshot_uuids = [uuid for uuid in ordered_uuids if uuid not in set(failed_uuids)]
-    current_snapshot_at = save_current_snapshot(conn, snapshot_uuids)
+    if args.reset_baseline:
+        snapshot_signatures = current_signatures
+    else:
+        snapshot_signatures = list(dict.fromkeys(previous_signatures + current_signatures))
+    current_snapshot_at = save_current_snapshot(conn, snapshot_signatures)
     conn.close()
     metadata = {
         "previous_snapshot_at": previous_snapshot_at,
         "current_snapshot_at": current_snapshot_at,
-        "current_jobs": len(ordered_uuids),
-        "previous_jobs": len(previous_uuids),
-        "new_jobs": len(new_uuids),
-        "seen_before": len(ordered_uuids) - len(new_uuids),
+        "current_jobs": len(ordered_list_rows),
+        "previous_jobs": len(previous_signatures),
+        "snapshot_jobs": len(snapshot_signatures),
+        "new_jobs": len(new_list_rows),
+        "seen_before": len(ordered_list_rows) - len(new_list_rows),
         "filtered_out": len(filtered_out_rows),
+        "list_skipped": len(list_skipped_rows),
+        "location_filtered": len(location_filtered_rows),
+        "detail_attempted": detail_attempted,
         "failed_details": len(failed_uuids),
         "min_salary": args.min_salary,
         "min_company_size": args.min_company_size,
+        "baseline_reset": args.reset_baseline,
     }
-    return all_rows, matched_rows, metadata
+    return all_rows, matched_rows, metadata, ordered_list_rows
 
 
 def write_csv(rows, path):
@@ -959,14 +1295,16 @@ def write_json(data, path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", type=int, default=50, help="要抓取的列表页页数上限")
+    parser.add_argument("--pages", type=int, default=500, help="要抓取的列表页页数上限；连续空页会提前停止")
     parser.add_argument("--delay", type=float, default=0.15, help="每次新请求后的等待秒数，避免访问过快")
     parser.add_argument("--cache", type=Path, default=Path("shixiseng_school_cache.sqlite3"), help="SQLite 缓存和增量快照文件")
     parser.add_argument("--outdir", type=Path, default=Path("outputs"), help="输出目录")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
     parser.add_argument("--use-list-cache", action="store_true", help="调试用：允许复用列表页缓存；日常扫描不建议开启")
+    parser.add_argument("--detail-all-new", action="store_true", help="兼容旧参数；当前默认已对所有新增且通过硬筛的岗位打开详情页确认地点")
+    parser.add_argument("--reset-baseline", action="store_true", help="只用当前列表建立增量基线，不把当前既有岗位当作新增展示")
     parser.add_argument("--stop-after-empty-pages", type=int, default=2, help="连续空列表页达到该数量后提前停止")
-    parser.add_argument("--cache-retention-days", type=int, default=30, help="网页缓存保留天数，超过的自动清理（默认 30 天）")
+    parser.add_argument("--cache-retention-days", type=int, default=2, help="网页缓存保留天数，超过的自动清理；不影响基线快照（默认 2 天）")
     parser.add_argument("--min-salary", type=int, default=10000, help="已知薪资下限低于该值的岗位会被剔除（默认 10000）")
     parser.add_argument("--min-company-size", type=int, default=1000, help="已知公司规模区间下限低于该值的岗位会被剔除（默认 1000）")
     args = parser.parse_args()
@@ -976,12 +1314,13 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     print(f"started={started}", flush=True)
-    all_rows, matched_rows, metadata = scan(args)
+    all_rows, matched_rows, metadata, list_rows = scan(args)
 
     explicit = [r for r in matched_rows if r["category"].startswith("直接")]
     approximate = [r for r in matched_rows if r["category"].startswith("近似")]
     approximate.sort(key=lambda r: (-int(r["score"]), r["refresh_time"], r["title"]))
 
+    write_csv(list_rows, outdir / "current_list_jobs.csv")
     write_csv(all_rows, outdir / "new_jobs.csv")
     write_csv(explicit, outdir / "explicit_matches.csv")
     write_csv(approximate, outdir / "approximate_matches.csv")
@@ -992,7 +1331,7 @@ def main():
             "pages": args.pages,
             "list_url_page_1": list_url(1),
             "scanned_jobs": len(all_rows),
-            "scope": "上海校招/全职；仅展示上次扫描以来新增岗位",
+            "scope": "上海校招/全职；列表页快速查重和薪资/规模硬筛，详情页确认上海地点后输出",
             **metadata,
             "explicit_matches": len(explicit),
             "approximate_matches": len(approximate),
@@ -1004,6 +1343,7 @@ def main():
     print(
         f"new_scanned_jobs={len(all_rows)} explicit={len(explicit)} "
         f"approximate={len(approximate)} filtered_out={metadata['filtered_out']} "
+        f"detail_attempted={metadata['detail_attempted']} "
         f"outdir={outdir}",
         flush=True,
     )
