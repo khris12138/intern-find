@@ -3,8 +3,9 @@
 每日扫描入口。
 
 执行内容：
-1. 抓取实习僧“上海 + 1天内发布 + 实习”岗位。
-2. 打开详情页筛选适合社会学博士的岗位。
+1. 抓取实习僧“上海 + 校招/全职”岗位。
+2. 与上次扫描结果比对，只展示上次以来新增的岗位。
+3. 打开新增岗位详情页，按薪资、公司规模和能力匹配筛选适合社会学博士的岗位。
 3. 生成 CSV、JSON 和 Excel。
 
 推荐由 launchd 在每天 11:00 调用：
@@ -43,12 +44,12 @@ def newest_run_dir(outputs):
 
 def unique_excel_path(outputs, timestamp):
     """生成不会覆盖既有结果的 Excel 路径。"""
-    base = outputs / f"上海社会学相关实习筛选_{timestamp}.xlsx"
+    base = outputs / f"上海校招新增岗位筛选_{timestamp}.xlsx"
     if not base.exists():
         return base
     counter = 2
     while True:
-        candidate = outputs / f"上海社会学相关实习筛选_{timestamp}_{counter}.xlsx"
+        candidate = outputs / f"上海校招新增岗位筛选_{timestamp}_{counter}.xlsx"
         if not candidate.exists():
             return candidate
         counter += 1
@@ -93,7 +94,7 @@ def open_urls_in_browser(run_dir: Path):
 
 def update_latest_copy(source):
     """尝试更新 latest 副本；失败不影响本次带时间戳的正式结果。"""
-    latest = source.parent / "上海社会学相关实习筛选_latest.xlsx"
+    latest = source.parent / "上海校招新增岗位筛选_latest.xlsx"
     try:
         shutil.copy2(source, latest)
     except OSError as exc:
@@ -106,7 +107,7 @@ def main():
     parser.add_argument("--pages", type=int, default=50, help="列表页扫描上限")
     parser.add_argument("--delay", type=float, default=0.3, help="每次新请求后的等待秒数")
     parser.add_argument("--outdir", type=Path, default=ROOT / "outputs", help="输出根目录")
-    parser.add_argument("--cache", type=Path, default=ROOT / "shixiseng_day_cache.sqlite3", help="一天内岗位缓存")
+    parser.add_argument("--cache", type=Path, default=ROOT / "shixiseng_school_cache.sqlite3", help="校招增量扫描缓存和快照")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
     parser.add_argument("--open-urls", action="store_true", help="完成后在默认浏览器打开直接匹配和近似匹配-高链接")
     args = parser.parse_args()

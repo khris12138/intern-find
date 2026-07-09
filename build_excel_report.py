@@ -30,12 +30,16 @@ from xml.sax.saxutils import escape
 
 
 FIELD_LABELS = [
+    ("is_new", "是否新增"),
     ("match_level", "匹配等级"),
     ("title", "岗位名称"),
     ("company", "公司"),
     ("industry", "行业"),
     ("address", "工作地点"),
     ("salary", "薪资"),
+    ("min_salary", "薪资下限"),
+    ("max_salary", "薪资上限"),
+    ("scale", "公司规模"),
     ("degree", "学历要求"),
     ("refresh_time", "刷新时间"),
     ("url", "详情链接"),
@@ -45,6 +49,7 @@ FIELD_LABELS = [
     ("description", "职位描述"),
     ("parse_status", "正文解析"),
     ("parse_warning", "解析警告"),
+    ("filter_reasons", "筛选剔除原因"),
     ("uuid", "岗位ID"),
 ]
 
@@ -273,13 +278,10 @@ def min_salary(salary_str):
 
 
 def rows_for_matches(rows):
-    """把 CSV 字典列表转换为工作表二维数组，过滤日薪低于 100 的岗位。"""
+    """把 CSV 字典列表转换为工作表二维数组。"""
     header = [label for _, label in FIELD_LABELS]
     output = [header]
     for row in rows:
-        sal = min_salary(row.get("salary", ""))
-        if sal is not None and sal < 100:
-            continue
         output.append([row.get(field, "") for field, _ in FIELD_LABELS])
     return output
 
@@ -302,12 +304,15 @@ def summary_rows(explicit, approximate, metadata=None):
     for row in approximate:
         levels[row.get("match_level", "")] = levels.get(row.get("match_level", ""), 0) + 1
     scanned_jobs = metadata.get("scanned_jobs", "")
-    source_desc = "来自上海、1天内发布、实习岗位列表"
+    source_desc = "来自上海校招/全职岗位列表，仅展示上次扫描以来新增岗位"
     if metadata.get("list_url_page_1"):
         source_desc = metadata["list_url_page_1"]
     return [
         ["项目", "数值", "说明"],
-        ["扫描岗位总数", scanned_jobs, source_desc],
+        ["本轮新增岗位详情数", scanned_jobs, source_desc],
+        ["当前列表岗位总数", metadata.get("current_jobs", ""), "本次列表页中看到的全部上海校招/全职岗位"],
+        ["上次以来新增岗位", metadata.get("new_jobs", ""), "通过岗位 ID 与上次扫描快照比对得到"],
+        ["硬筛剔除", metadata.get("filtered_out", ""), f"已知薪资下限低于 {metadata.get('min_salary', 10000)} 或公司规模下限低于 {metadata.get('min_company_size', 1000)}"],
         ["直接匹配", len(explicit), "岗位描述直接出现社会学、社会科学、人文社科、社科、用户研究、用户洞察或用研"],
         ["近似匹配", len(approximate), "未直接出现上述词，但包含研究、调研、行业分析、社会议题等能力信号"],
         ["近似匹配-高", levels.get("高", 0), "建议优先查看"],
@@ -347,10 +352,10 @@ def default_widths():
         5: 18,
         6: 10,
         7: 32,
-        8: 14,
-        9: 10,
-        10: 10,
-        11: 12,
+        8: 12,
+        9: 12,
+        10: 14,
+        11: 10,
         12: 20,
         13: 14,
         14: 52,
@@ -360,7 +365,8 @@ def default_widths():
         18: 80,
         19: 14,
         20: 42,
-        21: 18,
+        21: 20,
+        22: 18,
     }
 
 
