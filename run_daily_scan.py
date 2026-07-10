@@ -110,6 +110,7 @@ def main():
     parser.add_argument("--cache", type=Path, default=ROOT / "shixiseng_school_cache.sqlite3", help="校招增量扫描缓存和快照")
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
     parser.add_argument("--reset-baseline", action="store_true", help="只建立当前职位列表基线，不把当前既有岗位当作新增展示")
+    parser.add_argument("--scan-current", action="store_true", help="筛选当前列表中的全部岗位，同时保留累计基线用于明天对比")
     parser.add_argument("--detail-all-new", action="store_true", help="兼容旧参数；当前默认已对所有新增且通过硬筛的岗位打开详情页")
     parser.add_argument("--open-urls", action="store_true", help="完成后在默认浏览器打开直接匹配和近似匹配-高链接")
     args = parser.parse_args()
@@ -130,6 +131,8 @@ def main():
         scan_command.append("--refresh")
     if args.reset_baseline:
         scan_command.append("--reset-baseline")
+    if args.scan_current:
+        scan_command.append("--scan-current")
     if args.detail_all_new:
         scan_command.append("--detail-all-new")
 

@@ -141,6 +141,12 @@ python3 full_scan_once.py --pages 500 --delay 0.15 --outdir outputs
 python3 run_daily_scan.py --reset-baseline
 ```
 
+如果已经建立了今天基线，但还想把今天当前列表中的全部岗位按筛选规则跑一遍并输出 Excel，同时保留这个基线用于明天对比：
+
+```bash
+python3 run_daily_scan.py --scan-current
+```
+
 如果你希望手动指定更高页数上限：
 
 ```bash

@@ -1154,6 +1154,8 @@ def scan(args):
         for row in ordered_list_rows
         if row["signature"] not in previous_key_set and row.get("uuid", "") not in previous_uuid_set
     ]
+    if args.scan_current:
+        new_list_rows = ordered_list_rows
     if args.reset_baseline:
         new_list_rows = []
 
@@ -1161,6 +1163,7 @@ def scan(args):
         f"snapshot_previous_at={previous_snapshot_at or 'none'} "
         f"current_jobs={len(ordered_list_rows)} new_jobs={len(new_list_rows)} "
         f"seen_before={len(ordered_list_rows) - len(new_list_rows)}"
+        f"{' scan_current' if args.scan_current else ''}"
         f"{' baseline_reset' if args.reset_baseline else ''}",
         flush=True,
     )
@@ -1276,6 +1279,7 @@ def scan(args):
         "min_salary": args.min_salary,
         "min_company_size": args.min_company_size,
         "baseline_reset": args.reset_baseline,
+        "scan_current": args.scan_current,
     }
     return all_rows, matched_rows, metadata, ordered_list_rows
 
@@ -1302,6 +1306,7 @@ def main():
     parser.add_argument("--refresh", action="store_true", help="忽略缓存，重新下载网页")
     parser.add_argument("--use-list-cache", action="store_true", help="调试用：允许复用列表页缓存；日常扫描不建议开启")
     parser.add_argument("--detail-all-new", action="store_true", help="兼容旧参数；当前默认已对所有新增且通过硬筛的岗位打开详情页确认地点")
+    parser.add_argument("--scan-current", action="store_true", help="筛选当前列表中的全部岗位，同时保留累计基线用于明天对比")
     parser.add_argument("--reset-baseline", action="store_true", help="只用当前列表建立增量基线，不把当前既有岗位当作新增展示")
     parser.add_argument("--stop-after-empty-pages", type=int, default=2, help="连续空列表页达到该数量后提前停止")
     parser.add_argument("--cache-retention-days", type=int, default=2, help="网页缓存保留天数，超过的自动清理；不影响基线快照（默认 2 天）")
